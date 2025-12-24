@@ -1,6 +1,35 @@
-# Getting Started with Create React App
+# Agora Conversational AI front-end
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+React UI for starting/stopping an Agora Conversational AI agent, sending it
+voice messages, and joining the agent’s RTC channel. The app is wired to the
+IVITA API endpoints listed in the task description.
+
+## Environment variables
+
+Create a `.env` file (or export values) before running the app:
+
+```
+REACT_APP_AGORA_APP_ID=<your-agora-app-id>
+REACT_APP_API_BASE_URL=https://ivita.apidog.io
+REACT_APP_API_PREFIX=/agora-ai
+REACT_APP_USER_ACCESS_TOKEN=<user bearer token for the IVITA API>
+```
+
+`REACT_APP_API_PREFIX` lets you adjust the path segment if your backend hosts
+the endpoints somewhere other than `/agora-ai`.
+
+## Running locally
+
+```
+npm install
+npm start
+```
+
+The app runs at http://localhost:3000.
+
+---
+
+This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app), so the original CRA instructions are kept below.
 
 ## Available Scripts
 
