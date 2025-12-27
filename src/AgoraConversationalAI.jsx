@@ -144,32 +144,32 @@ const AgoraConversationalAI = ({ appId }) => {
 
   // Handle remote users publishing/unpublishing audio
   useEffect(() => {
-    // const handleUserPublished = async (user, mediaType) => {
-    //   if (mediaType === 'audio') {
-    //     try {
-    //       await client.subscribe(user, mediaType);
-    //       if (user.audioTrack) {
-    //         user.audioTrack.play();
-    //         setAudioTracks(prev => [...prev, user.audioTrack]);
-    //       }
-    //       setRemoteUsers(prev => {
-    //         if (prev.some(u => u.uid === user.uid)) return prev;
-    //         return [...prev, user];
-    //       });
-    //     } catch (err) {
-    //       console.error('Subscribe failed:', err);
-    //     }
-    //   }
-    // };
+    const handleUserPublished = async (user, mediaType) => {
+      if (mediaType === 'audio') {
+        try {
+          await client.subscribe(user, mediaType);
+          if (user.audioTrack) {
+            user.audioTrack.play();
+            setAudioTracks(prev => [...prev, user.audioTrack]);
+          }
+          setRemoteUsers(prev => {
+            if (prev.some(u => u.uid === user.uid)) return prev;
+            return [...prev, user];
+          });
+        } catch (err) {
+          console.error('Subscribe failed:', err);
+        }
+      }
+    };
 
-    // const handleUserUnpublished = (user, mediaType) => {
-    //   if (mediaType === 'audio') {
-    //     setRemoteUsers(prev => prev.filter(u => u.uid !== user.uid));
-    //     if (user.audioTrack) {
-    //       setAudioTracks(prev => prev.filter(t => t !== user.audioTrack));
-    //     }
-    //   }
-    // };
+    const handleUserUnpublished = (user, mediaType) => {
+      if (mediaType === 'audio') {
+        setRemoteUsers(prev => prev.filter(u => u.uid !== user.uid));
+        if (user.audioTrack) {
+          setAudioTracks(prev => prev.filter(t => t !== user.audioTrack));
+        }
+      }
+    };
     // Poll and play remote audio tracks (for AI agent streams)
 
     const handleUserJoined = (user) => {
@@ -188,14 +188,14 @@ const AgoraConversationalAI = ({ appId }) => {
       }
     };
 
-    // client.on('user-published', handleUserPublished);
-    // client.on('user-unpublished', handleUserUnpublished);
+    client.on('user-published', handleUserPublished);
+    client.on('user-unpublished', handleUserUnpublished);
     client.on('user-joined', handleUserJoined);
     client.on('user-left', handleUserLeft);
 
     return () => {
-      // client.off('user-published', handleUserPublished);
-      // client.off('user-unpublished', handleUserUnpublished);
+      client.off('user-published', handleUserPublished);
+      client.off('user-unpublished', handleUserUnpublished);
       client.off('user-joined', handleUserJoined);
       client.off('user-left', handleUserLeft);
     };
@@ -336,14 +336,14 @@ const AgoraConversationalAI = ({ appId }) => {
 
     try {
       setIsSending(true);
-      const res = await api.post(withPrefix('/send-voice'), {
+      const res = await api.post(withPrefix('/send-text'), {
         agent_id: agentId,
         message: text
       });
 
       const success = res.data?.success ?? res.data?.ok ?? true;
       if (!success) {
-        throw new Error(res.data?.error || 'send-voice failed');
+        throw new Error(res.data?.error || 'send-text failed');
       }
 
       pushMessage({
@@ -351,8 +351,8 @@ const AgoraConversationalAI = ({ appId }) => {
         text: 'AI is speaking this message in the voice channel…'
       });
     } catch (error) {
-      console.error('Send voice failed:', error);
-      pushMessage({ from: 'system', text: `Failed to send voice: ${error.message}` });
+      console.error('Send text failed:', error);
+      pushMessage({ from: 'system', text: `Failed to send text: ${error.message}` });
     } finally {
       setIsSending(false);
     }
@@ -469,13 +469,13 @@ const AgoraConversationalAI = ({ appId }) => {
       <div className="composer">
         <input
           type="text"
-          placeholder="Type text for the agent to speak…"
+          placeholder="Type text for the agent"
           value={textInput}
           onChange={e => setTextInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSendVoice()}
         />
         <button onClick={handleSendVoice} disabled={!agentId || !textInput.trim() || isSending}>
-          {isSending ? 'Sending…' : 'Send Voice'}
+          {isSending ? 'Sending…' : 'Send Text'}
         </button>
       </div>
 
