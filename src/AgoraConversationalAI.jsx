@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import AgoraRTC from 'agora-rtc-sdk-ng';
 
@@ -14,7 +14,9 @@ const AgoraConversationalAI = ({ appId }) => {
     return makeRtcUid();
   };
 
-  const [userId, setUserId] = useState(() => makeRtcUid());
+  const playedTracksRef = useRef(new Set());
+  const hasPublishedRef = useRef(false);
+  const [userId, setUserId] = useState(null);
   const [channelName, setChannelName] = useState('');
   const [agentId, setAgentId] = useState(null);
   const [rtcToken, setRtcToken] = useState(null);
@@ -36,34 +38,72 @@ const AgoraConversationalAI = ({ appId }) => {
     return AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8', audioScenario: 'AI_CLIENT', autoSubscribeAudio: true });
   }, []);
 
+  const pushMessage = useCallback((payload) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        ...payload,
+        time: payload.time || new Date().toLocaleTimeString()
+      }
+    ]);
+  }, []);
+
   // Create local microphone track manually
   useEffect(() => {
     if (!micEnabled) {
       if (localMicrophoneTrack) {
-        localMicrophoneTrack.close();
-        setLocalMicrophoneTrack(null);
+        localMicrophoneTrack.setEnabled(false).catch(console.error);
+        // Optionally close it instead
+        // localMicrophoneTrack.close();
+        // setLocalMicrophoneTrack(null);
       }
       return;
     }
 
     let track;
-    AgoraRTC.createMicrophoneAudioTrack()
-      .then(createdTrack => {
-        track = createdTrack;
+    const createTrack = async () => {
+      // Check permissions first
+      let hasPermission = false;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop()); // Stop immediately, just checking
+        console.log('Microphone permission granted');
+        hasPermission = true;
+      } catch (err) {
+        console.error('Microphone permission denied:', err);
+        pushMessage({ from: 'system', text: `Microphone permission denied: ${err.message}` });
+        hasPermission = false;
+      }
+      
+      if (!hasPermission) return;
+
+      try {
+        track = await AgoraRTC.createMicrophoneAudioTrack();
+        // Explicitly enable the track
+        await track.setEnabled(true);
+        await track.setMuted(false);
         setLocalMicrophoneTrack(track);
-        console.log('Local microphone track created');
-      })
-      .catch(err => {
+        console.log('Local microphone track created and enabled');
+        
+        // Verify the track is working
+        const mediaStreamTrack = track.getMediaStreamTrack();
+        if (mediaStreamTrack) {
+          console.log('Track state:', mediaStreamTrack.readyState, mediaStreamTrack.enabled);
+        }
+      } catch (err) {
         console.error('Failed to create microphone track:', err);
         pushMessage({ from: 'system', text: `Mic error: ${err.message}` });
-      });
+      }
+    };
+
+    createTrack();
 
     return () => {
       if (track) {
         track.close();
       }
     };
-  }, [micEnabled]);
+  }, [micEnabled, pushMessage]);
 
   const api = useMemo(() => {
     const instance = axios.create({
@@ -98,20 +138,27 @@ const AgoraConversationalAI = ({ appId }) => {
 
   // Join channel when token & channel are ready
   useEffect(() => {
-    if (!channelName || !rtcToken) return;
+    if (!channelName || !rtcToken || !userId) return;
 
     const join = async () => {
       try {
+        // Make sure we're not already connected
+        if (client.connectionState === 'CONNECTED') {
+          console.log('Already connected to channel');
+          return;
+        }
+
         await client.join(appId, channelName, rtcToken, joinUid);
         setIsConnected(true);
-        console.log('Joined channel successfully');
+        console.log('Joined channel successfully, connection state:', client.connectionState);
       } catch (err) {
         console.error('Join failed:', err);
+        setIsConnected(false);
       }
     };
 
     join();
-  }, [channelName, rtcToken, client, appId, joinUid]);
+  }, [channelName, rtcToken, userId, client, appId, joinUid]);
 
   // Publish local mic when connected and track ready
   useEffect(() => {
@@ -125,37 +172,88 @@ const AgoraConversationalAI = ({ appId }) => {
       return;
     }
 
+    // Prevent duplicate publishing
+    if (hasPublishedRef.current) {
+      console.log('Already published, skipping duplicate publish');
+      return;
+    }
+
     const publish = async () => {
       try {
+        // Wait a bit to ensure connection is stable
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Double-check connection state
+        if (client.connectionState !== 'CONNECTED') {
+          console.warn('Not connected, skipping publish. State:', client.connectionState);
+          return;
+        }
+
+        // Check if already published
+        const publishedTracks = client.localTracks;
+        const trackId = localMicrophoneTrack.getTrackId();
+        if (publishedTracks.some(t => t.getTrackId() === trackId)) {
+          console.log('Track already published');
+          hasPublishedRef.current = true;
+          return;
+        }
+
+        // Ensure track is enabled before publishing
+        await localMicrophoneTrack.setEnabled(true);
+        await localMicrophoneTrack.setMuted(false);
+        
         await client.publish([localMicrophoneTrack]);
+        hasPublishedRef.current = true;
         console.log('Microphone published successfully');
+        console.log('Published tracks:', client.localTracks);
       } catch (err) {
         console.error('Publish failed:', err);
+        hasPublishedRef.current = false;
+        pushMessage({ from: 'system', text: `Publish error: ${err.message}` });
       }
     };
 
     publish();
 
-    // Cleanup: unpublish when track changes or component unmounts
+    // Cleanup: unpublish when disconnecting
     return () => {
-      client.unpublish([localMicrophoneTrack]).catch(() => {});
+      if (hasPublishedRef.current) {
+        client.unpublish([localMicrophoneTrack]).catch(err => {
+          console.error('Unpublish error:', err);
+        });
+        hasPublishedRef.current = false;
+      }
     };
-  }, [isConnected, localMicrophoneTrack, client]);
+  }, [isConnected, localMicrophoneTrack, client, pushMessage]);
 
   // Handle remote users publishing/unpublishing audio
   useEffect(() => {
     const handleUserPublished = async (user, mediaType) => {
       if (mediaType === 'audio') {
+        console.log('User published audio:', user.uid);
         try {
           await client.subscribe(user, mediaType);
+          console.log('Subscribed to user:', user.uid);
+          
           if (user.audioTrack) {
+            // Play the audio track only once
             user.audioTrack.play();
-            setAudioTracks(prev => [...prev, user.audioTrack]);
+            console.log('Playing audio track from UID:', user.uid);
+            
+            // Update state to track this user
+            setRemoteUsers(prev => {
+              if (prev.some(u => u.uid === user.uid)) return prev;
+              return [...prev, user];
+            });
+            
+            setAudioTracks(prev => {
+              // Prevent duplicate tracks
+              if (prev.some(t => t.getTrackId() === user.audioTrack.getTrackId())) {
+                return prev;
+              }
+              return [...prev, user.audioTrack];
+            });
           }
-          setRemoteUsers(prev => {
-            if (prev.some(u => u.uid === user.uid)) return prev;
-            return [...prev, user];
-          });
         } catch (err) {
           console.error('Subscribe failed:', err);
         }
@@ -164,13 +262,15 @@ const AgoraConversationalAI = ({ appId }) => {
 
     const handleUserUnpublished = (user, mediaType) => {
       if (mediaType === 'audio') {
+        console.log('User unpublished audio:', user.uid);
         setRemoteUsers(prev => prev.filter(u => u.uid !== user.uid));
         if (user.audioTrack) {
-          setAudioTracks(prev => prev.filter(t => t !== user.audioTrack));
+          setAudioTracks(prev => 
+            prev.filter(t => t.getTrackId() !== user.audioTrack.getTrackId())
+          );
         }
       }
     };
-    // Poll and play remote audio tracks (for AI agent streams)
 
     const handleUserJoined = (user) => {
       console.log('Remote user joined:', user.uid);
@@ -184,7 +284,9 @@ const AgoraConversationalAI = ({ appId }) => {
       console.log('Remote user left:', user.uid);
       setRemoteUsers(prev => prev.filter(u => u.uid !== user.uid));
       if (user.audioTrack) {
-        setAudioTracks(prev => prev.filter(t => t !== user.audioTrack));
+        setAudioTracks(prev => 
+          prev.filter(t => t.getTrackId() !== user.audioTrack.getTrackId())
+        );
       }
     };
 
@@ -201,6 +303,7 @@ const AgoraConversationalAI = ({ appId }) => {
     };
   }, [client]);
 
+  /*
   // Poll remote users for audio tracks and play them (required for Conversational AI on Web)
   useEffect(() => {
     if (!isConnected) return;
@@ -226,20 +329,51 @@ const AgoraConversationalAI = ({ appId }) => {
 
     return () => clearInterval(interval);
   }, [isConnected, client, audioTracks]);
-
-  const pushMessage = (payload) => {
-    setMessages(prev => [
-      ...prev,
-      {
-        ...payload,
-        time: payload.time || new Date().toLocaleTimeString()
+*/
+  const toggleMic = async () => {
+    if (localMicrophoneTrack) {
+      try {
+        const newState = !micEnabled;
+        await localMicrophoneTrack.setEnabled(newState);
+        await localMicrophoneTrack.setMuted(!newState);
+        setMicEnabled(newState);
+        console.log(`Microphone ${newState ? 'enabled' : 'disabled'}`);
+      } catch (err) {
+        console.error('Failed to toggle microphone:', err);
+        pushMessage({ from: 'system', text: `Mic toggle error: ${err.message}` });
       }
-    ]);
+    } else if (micEnabled) {
+      // If track doesn't exist but micEnabled is true, create it
+      setMicEnabled(false);
+      setMicEnabled(true); // This will trigger the useEffect to create the track
+    }
   };
 
-  const toggleMic = () => {
-    setMicEnabled(prev => !prev);
-  };
+  // Add this useEffect to monitor audio levels
+  useEffect(() => {
+    if (!localMicrophoneTrack || !isConnected) return;
+
+    const checkAudioLevel = async () => {
+      try {
+        // Ensure method exists and is callable
+        if (typeof localMicrophoneTrack.getStats !== 'function') {
+          // Comment this out later if too noisy
+          console.warn('localMicrophoneTrack.getStats is not available');
+          return;
+        }
+
+        const stats = await localMicrophoneTrack.getStats();
+        if (stats && stats.sendAudioLevel != null) {
+          console.log('Audio level:', stats.sendAudioLevel);
+        }
+      } catch (err) {
+        console.error('Error reading audio level:', err);
+      }
+    };
+
+    const interval = setInterval(checkAudioLevel, 1000);
+    return () => clearInterval(interval);
+  }, [localMicrophoneTrack, isConnected]);
 
   const fetchRtcToken = async (incomingAgentId, incomingChannelName, incomingRtcUid) => {
     const safeUid = normalizeRtcUid(incomingRtcUid);
@@ -313,6 +447,9 @@ const AgoraConversationalAI = ({ appId }) => {
       }
 
       setAgentId(newAgentId);
+      setChannelName(newChannelName);
+      setUserId(rtcUid);
+
       pushMessage({
         from: 'system',
         text: `Agent ${newAgentId} ${isNew ? 'created' : 'reused'} on channel ${newChannelName}`
@@ -327,6 +464,7 @@ const AgoraConversationalAI = ({ appId }) => {
       setIsStarting(false);
     }
   };
+
 
   const handleSendVoice = async () => {
     if (!agentId || !textInput.trim()) return;
@@ -360,18 +498,42 @@ const AgoraConversationalAI = ({ appId }) => {
 
   const handleStopAgent = async () => {
     if (!agentId) return;
+    
     try {
+      // Unpublish before leaving
+      if (localMicrophoneTrack && hasPublishedRef.current) {
+        await client.unpublish([localMicrophoneTrack]).catch(console.error);
+      }
+      
+      // Leave channel
+      await client.leave();
+      
+      // Stop agent on server
       await api.post(withPrefix('/stop-agent'), { agent_id: agentId });
     } catch (error) {
       console.error('stop agent error:', error);
     }
 
+    // Reset all refs
+    playedTracksRef.current.clear();
+    hasPublishedRef.current = false;
+    
+    // Clear state
     pushMessage({ from: 'system', text: 'Agent stopped' });
     setAgentId(null);
     setChannelName('');
     setRtcToken(null);
+    setUserId(null);
     setIsConnected(false);
-    await client.leave();
+    setRemoteUsers([]);
+    setAudioTracks([]);
+    setMessages([]);
+
+    // Close microphone track
+    if (localMicrophoneTrack) {
+      localMicrophoneTrack.close();
+      setLocalMicrophoneTrack(null);
+    }
   };
 
   const loadHistory = async (id = null) => {

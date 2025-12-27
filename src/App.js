@@ -1,5 +1,4 @@
 import './App.css';
-import AgoraVoiceChat from './AgoraVoiceChat';
 import AgoraConversationalAI from './AgoraConversationalAI';
 
 const DEFAULT_APP_ID = 'YOUR_APP_ID';
